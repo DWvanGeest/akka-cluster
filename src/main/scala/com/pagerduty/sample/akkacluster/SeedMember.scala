@@ -13,7 +13,7 @@ object SeedMember {
 class SeedMember(port: Int) extends ClusterMember {
   import SeedMember._
 
-  def run: ActorSystem = {
+  def init: ActorSystem = {
     val config = ConfigFactory.parseString(s"akka.remote.netty.tcp.port=$port").
       withFallback(ConfigFactory.parseString(s"akka.cluster.roles = [$Role]")).
       withFallback(ConfigFactory.load())

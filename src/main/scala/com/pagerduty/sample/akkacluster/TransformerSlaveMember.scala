@@ -1,10 +1,13 @@
 package com.pagerduty.sample.akkacluster
 
-import akka.pattern.gracefulStop
+import akka.pattern.{AskableActorRef, gracefulStop}
 import akka.actor._
 import akka.cluster.ClusterEvent.{CurrentClusterState, MemberUp}
+import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
 import com.typesafe.config.ConfigFactory
 import akka.cluster.{Cluster, Member, MemberStatus}
+import akka.util.Timeout
+import com.pagerduty.sample.akkacluster.Settings.{ModeFetched, Stub, Upcase}
 import com.pagerduty.sample.akkacluster.TransformerMaster.RegisterSlave
 
 import scala.concurrent.duration.Duration
@@ -21,12 +24,21 @@ class TransformerSlaveMember(port: Int) extends ClusterMember {
   var slaveRef: ActorRef = _
   var system: ActorSystem = _
 
-  def run(): ActorSystem = {
+  def init(): ActorSystem = {
     val config = ConfigFactory.parseString(s"akka.remote.netty.tcp.port=$port").
       withFallback(ConfigFactory.parseString(s"akka.cluster.roles = [${TransformerSlaveMember.Role}]")).
       withFallback(ConfigFactory.load())
 
     system = ActorSystem(SeedMember.ClusterName, config)
+
+    system.actorOf(
+      ClusterSingletonManager.props(
+        singletonProps = Props(classOf[Settings]),
+        terminationMessage = PoisonPill,
+        settings = ClusterSingletonManagerSettings(system).withRole(TransformerSlaveMember.Role)),
+      name = Settings.ActorName)
+
+
     println(s"Started ${TransformerSlaveMember.Role} cluster!")
 
     slaveRef = system.actorOf(Props[TransformerSlave], name = TransformerSlave.ActorName)
@@ -53,6 +65,8 @@ class TransformerSlave extends Actor with ActorLogging {
 
   val cluster = Cluster(context.system)
 
+  val settingsRef = new AskableActorRef(settingsProxyRef())
+
   // subscribe to cluster changes, MemberUp
   // re-subscribe when restart
   override def preStart(): Unit = {
@@ -63,7 +77,20 @@ class TransformerSlave extends Actor with ActorLogging {
   def receive = {
     case TransformText(id, text) =>
       log.info(s"Transforming text with ID $id")
-      sender() ! TextTransformed(id, text.toUpperCase())
+      implicit val timeout = Timeout(20 seconds)
+      val fMode = settingsRef ? Settings.FetchMode // quick and dirty hack
+
+      val master = sender() // don't close over mutable state...
+
+      import context.dispatcher
+      fMode foreach { mode =>
+        val transformed = mode match {
+          case ModeFetched(Upcase) => text.toUpperCase()
+          case ModeFetched(Stub) => s"SOME STUB TEXT FOR ID $id"
+        }
+
+        master ! TextTransformed(id, transformed)
+      }
     case state: CurrentClusterState =>
       state.members.filter(_.status == MemberStatus.Up) foreach register
     case MemberUp(m) =>
@@ -79,6 +106,14 @@ class TransformerSlave extends Actor with ActorLogging {
       val masters = context.actorSelection(RootActorPath(member.address) / "user" / TransformerMaster.ActorName)
       masters ! message
     }
+  }
+
+  private def settingsProxyRef(): ActorRef = {
+    context.system.actorOf(
+      ClusterSingletonProxy.props(
+        singletonManagerPath = s"/user/${Settings.ActorName}",
+        settings = ClusterSingletonProxySettings(context.system).withRole(TransformerSlaveMember.Role)),
+      name = "settingsProxy")
   }
 }
 

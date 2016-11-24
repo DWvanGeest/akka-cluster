@@ -9,6 +9,7 @@ lazy val root = (project in file(".")).
   settings(
     name := "akka-cluster",
     libraryDependencies ++= Seq(
-      "com.typesafe.akka" %% "akka-cluster" % "2.4.12"
+      "com.typesafe.akka" %% "akka-cluster" % "2.4.12",
+      "com.typesafe.akka" %% "akka-cluster-tools" % "2.4.12"
     )
   )

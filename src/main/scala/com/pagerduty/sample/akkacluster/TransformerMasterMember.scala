@@ -23,7 +23,7 @@ object TransformerMasterMember {
 }
 
 class TransformerMasterMember(port: Int) extends ClusterMember {
-  def run(): ActorSystem = {
+  def init(): ActorSystem = {
     val config = ConfigFactory.parseString(s"akka.remote.netty.tcp.port=$port").
       withFallback(ConfigFactory.parseString(s"akka.cluster.roles = [${TransformerMasterMember.Role}]")).
       withFallback(ConfigFactory.load())
