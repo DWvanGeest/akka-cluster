@@ -1,7 +1,7 @@
 package com.pagerduty.sample.akkacluster
 
 import akka.actor.{Actor, ActorLogging}
-import akka.persistence.PersistentActor
+import akka.persistence.{PersistentActor, SnapshotOffer}
 
 object Settings {
   val ActorName = "settings"
@@ -35,12 +35,19 @@ class Settings extends PersistentActor with ActorLogging {
         updateMode(msg)
         log.info(s"Mode set to $msg.newMode")
       }
+      if ((state.modeChangesNum % 3) == 0) {
+        log.info("Saving snapshot!")
+        saveSnapshot(state)
+      }
   }
 
   val receiveRecover: Receive = {
     case msg: SetMode =>
       log.info(s"Recovering state with message $msg")
       updateMode(msg)
+    case SnapshotOffer(_, snapshot: SettingsState) =>
+      log.info(s"Recovering state from snapshot $snapshot")
+      state = snapshot
   }
 
   private def updateMode(msg: SetMode): Unit = {
