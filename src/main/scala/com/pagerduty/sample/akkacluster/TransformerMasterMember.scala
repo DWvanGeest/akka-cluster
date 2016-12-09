@@ -5,7 +5,9 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import akka.pattern.AskableActorRef
 import akka.actor.{Actor, ActorRef, ActorSystem, LoggingFSM, Props, Terminated}
+import akka.cluster.singleton.{ClusterSingletonProxy, ClusterSingletonProxySettings}
 import akka.util.Timeout
+import com.pagerduty.sample.akkacluster.Settings.{Mode, SetMode, Stub, Upcase}
 import com.pagerduty.sample.akkacluster.TransformerMaster.TransformWork
 import com.pagerduty.sample.akkacluster.TransformerSlave.{TextTransformed, TransformText}
 import com.typesafe.config.ConfigFactory
@@ -40,6 +42,24 @@ class TransformerMasterMember(port: Int) extends ClusterMember {
       (master ? TransformWork("transformation job " + counter.incrementAndGet())) onSuccess {
         case result => println(s"Received transformation result $result")
       }
+    }
+
+    // yes yes, this is terrible
+    var currentMode: Mode = Upcase
+
+    val settings =     system.actorOf(
+      ClusterSingletonProxy.props(
+        singletonManagerPath = s"/user/${Settings.ActorName}",
+        settings = ClusterSingletonProxySettings(system).withRole(TransformerSlaveMember.Role)),
+      name = "settingsProxy")
+
+    system.scheduler.schedule(5 seconds, 60 seconds) {
+
+      currentMode = currentMode match {
+        case Upcase => Stub
+        case Stub => Upcase
+      }
+      settings ! SetMode(currentMode)
     }
 
     system
