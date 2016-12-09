@@ -16,6 +16,7 @@ lazy val root = (project in file(".")).
       "com.typesafe.akka" %% "akka-cluster" % "2.4.14",
       "com.typesafe.akka" %% "akka-cluster-tools" % "2.4.14",
       "com.typesafe.akka" %% "akka-persistence" % "2.4.14",
+      "com.typesafe.akka" %% "akka-cluster-sharding" % "2.4.14",
       "com.hootsuite" %% "akka-persistence-redis" % "0.6.0"
     )
   )

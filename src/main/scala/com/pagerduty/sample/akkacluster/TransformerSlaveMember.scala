@@ -3,16 +3,18 @@ package com.pagerduty.sample.akkacluster
 import akka.pattern.{AskableActorRef, gracefulStop}
 import akka.actor._
 import akka.cluster.ClusterEvent.{CurrentClusterState, MemberUp}
+import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
 import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
 import com.typesafe.config.ConfigFactory
 import akka.cluster.{Cluster, Member, MemberStatus}
 import akka.util.Timeout
-import com.pagerduty.sample.akkacluster.Settings.{ModeFetched, Stub, Upcase}
-import com.pagerduty.sample.akkacluster.TransformerMaster.RegisterSlave
+import com.pagerduty.sample.akkacluster.UserSettings._
+import com.pagerduty.sample.akkacluster.TransformerMaster.{RegisterSlave, TransformWork}
 
 import scala.concurrent.duration.Duration
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
+import scala.util.Random
 
 object TransformerSlaveMember {
   val Role = "TransformerSlave"
@@ -31,13 +33,28 @@ class TransformerSlaveMember(port: Int) extends ClusterMember {
 
     system = ActorSystem(SeedMember.ClusterName, config)
 
-    system.actorOf(
-      ClusterSingletonManager.props(
-        singletonProps = Props(classOf[Settings]),
-        terminationMessage = PoisonPill,
-        settings = ClusterSingletonManagerSettings(system).withRole(TransformerSlaveMember.Role)),
-      name = Settings.ActorName)
+//    system.actorOf(
+//      ClusterSingletonManager.props(
+//        singletonProps = Props(classOf[Settings]),
+//        terminationMessage = PoisonPill,
+//        settings = ClusterSingletonManagerSettings(system).withRole(TransformerSlaveMember.Role)),
+//      name = Settings.ActorName)
 
+
+    val userSettingsRegion: ActorRef = ClusterSharding(system).start(
+      typeName = "UserSettings",
+      entityProps = Props[UserSettings],
+      settings = ClusterShardingSettings(system),
+      extractEntityId = UserSettings.idExtractor,
+      extractShardId = UserSettings.shardResolver)
+
+    if (port == 3001) {
+      val usersToStub = Random.shuffle(1 to 100).drop(50)
+
+      println(s"********************* Stubbed users $usersToStub")
+
+      usersToStub foreach { uId => userSettingsRegion ! SetMode(uId, Stub) }
+    }
 
     println(s"Started ${TransformerSlaveMember.Role} cluster!")
 
@@ -56,8 +73,8 @@ class TransformerSlaveMember(port: Int) extends ClusterMember {
 object TransformerSlave {
   val ActorName = "transformer-slave"
 
-  case class TransformText(textId: String, text: String)
-  case class TextTransformed(textId: String, text: String)
+  case class TransformText(uId: Int, textId: String, text: String)
+  case class TextTransformed(uId: Int, textId: String, text: String)
 }
 
 class TransformerSlave extends Actor with ActorLogging {
@@ -65,7 +82,7 @@ class TransformerSlave extends Actor with ActorLogging {
 
   val cluster = Cluster(context.system)
 
-  val settingsRef = new AskableActorRef(settingsProxyRef())
+  val settingsRef = new AskableActorRef(userSettingRegion())
 
   // subscribe to cluster changes, MemberUp
   // re-subscribe when restart
@@ -75,21 +92,21 @@ class TransformerSlave extends Actor with ActorLogging {
   override def postStop(): Unit = cluster.unsubscribe(self)
 
   def receive = {
-    case TransformText(id, text) =>
+    case TransformText(uId, id, text) =>
       log.info(s"Transforming text with ID $id")
       implicit val timeout = Timeout(20 seconds)
-      val fMode = settingsRef ? Settings.FetchMode // quick and dirty hack
+      val fMode = settingsRef ? UserSettings.FetchMode(uId) // quick and dirty hack
 
       val master = sender() // don't close over mutable state...
 
       import context.dispatcher
       fMode foreach { mode =>
         val transformed = mode match {
-          case ModeFetched(Upcase) => text.toUpperCase()
-          case ModeFetched(Stub) => s"SOME STUB TEXT FOR ID $id"
+          case ModeFetched(_, Upcase) => text.toUpperCase()
+          case ModeFetched(_, Stub) => s"SOME STUB TEXT FOR ID $id"
         }
 
-        master ! TextTransformed(id, transformed)
+        master ! TextTransformed(uId, id, transformed)
       }
     case state: CurrentClusterState =>
       state.members.filter(_.status == MemberStatus.Up) foreach register
@@ -108,12 +125,8 @@ class TransformerSlave extends Actor with ActorLogging {
     }
   }
 
-  private def settingsProxyRef(): ActorRef = {
-    context.system.actorOf(
-      ClusterSingletonProxy.props(
-        singletonManagerPath = s"/user/${Settings.ActorName}",
-        settings = ClusterSingletonProxySettings(context.system).withRole(TransformerSlaveMember.Role)),
-      name = "settingsProxy")
+  private def userSettingRegion(): ActorRef = {
+    ClusterSharding(context.system).shardRegion("UserSettings")
   }
 }
 

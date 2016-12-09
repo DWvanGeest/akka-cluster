@@ -1,6 +1,7 @@
 package com.pagerduty.sample.akkacluster
 
 import akka.actor._
+import akka.cluster.sharding.ClusterSharding
 import com.typesafe.config.ConfigFactory
 
 object SeedMember {
@@ -19,6 +20,7 @@ class SeedMember(port: Int) extends ClusterMember {
       withFallback(ConfigFactory.load())
 
     val system = ActorSystem(ClusterName, config)
+
     println("Started seed cluster!")
     system
   }

@@ -7,7 +7,7 @@ import akka.pattern.AskableActorRef
 import akka.actor.{Actor, ActorRef, ActorSystem, LoggingFSM, Props, Terminated}
 import akka.cluster.singleton.{ClusterSingletonProxy, ClusterSingletonProxySettings}
 import akka.util.Timeout
-import com.pagerduty.sample.akkacluster.Settings.{Mode, SetMode, Stub, Upcase}
+import com.pagerduty.sample.akkacluster.UserSettings.{Mode, SetMode, Stub, Upcase}
 import com.pagerduty.sample.akkacluster.TransformerMaster.TransformWork
 import com.pagerduty.sample.akkacluster.TransformerSlave.{TextTransformed, TransformText}
 import com.typesafe.config.ConfigFactory
@@ -37,30 +37,19 @@ class TransformerMasterMember(port: Int) extends ClusterMember {
 
     val counter = new AtomicInteger
     import system.dispatcher
-    system.scheduler.schedule(1.seconds, 5.seconds) {
+
+    var userId = 1
+
+    system.scheduler.schedule(15.seconds, 15.seconds) {
       implicit val timeout = Timeout(5 seconds)
-      (master ? TransformWork("transformation job " + counter.incrementAndGet())) onSuccess {
-        case result => println(s"Received transformation result $result")
+      val uId = userId
+      (master ? TransformWork(uId, "transformation job " + counter.incrementAndGet())) onSuccess {
+        case result => println(s"Received transformation result $result for user $uId")
       }
+      userId += 1
     }
 
-    // yes yes, this is terrible
-    var currentMode: Mode = Upcase
 
-    val settings =     system.actorOf(
-      ClusterSingletonProxy.props(
-        singletonManagerPath = s"/user/${Settings.ActorName}",
-        settings = ClusterSingletonProxySettings(system).withRole(TransformerSlaveMember.Role)),
-      name = "settingsProxy")
-
-    system.scheduler.schedule(5 seconds, 60 seconds) {
-
-      currentMode = currentMode match {
-        case Upcase => Stub
-        case Stub => Upcase
-      }
-      settings ! SetMode(currentMode)
-    }
 
     system
   }
@@ -69,9 +58,9 @@ class TransformerMasterMember(port: Int) extends ClusterMember {
 object TransformerMaster {
   val ActorName = "transformer-master"
 
-  case class TransformWork(work: String)
-  case class WorkTransformed(work: String)
-  case class WorkNotTransformed(error: String)
+  case class TransformWork(userId: Int, work: String)
+  case class WorkTransformed(userId: Int, work: String)
+  case class WorkNotTransformed(userId: Int, error: String)
 
   case object RegisterSlave
 
@@ -87,24 +76,24 @@ class TransformerMaster extends Actor with LoggingFSM[TransformerMaster.State, T
   startWith(Executing, Data(Set.empty, Map.empty))
 
   when(Executing) {
-    case Event(TransformWork(_), Data(slaves, _)) if slaves.isEmpty =>
+    case Event(TransformWork(uId, _), Data(slaves, _)) if slaves.isEmpty =>
       log.info("No slaves registered, returning error")
-      sender() ! WorkNotTransformed("Service unavailable!")
+      sender() ! WorkNotTransformed(uId, "Service unavailable!")
       stay()
 
-    case Event(TransformWork(work), Data(slaves, jobs)) =>
+    case Event(TransformWork(uId, work), Data(slaves, jobs)) =>
       val textId = UUID.randomUUID().toString
       log.info(s"Received work for transformation, assigning ID $textId")
 
-      Random.shuffle(slaves).head ! TransformText(textId, work)
+      Random.shuffle(slaves).head ! TransformText(uId, textId, work)
 
       log.info(s"Work with id $textId sent to worker...")
 
       goto(Executing) using Data(slaves, jobs + (textId -> sender()))
 
-    case Event(TextTransformed(id, transformedText), Data(slaves, jobs)) =>
+    case Event(TextTransformed(uId, id, transformedText), Data(slaves, jobs)) =>
       log.info(s"Work with id $id transformed! Returning to requestor...")
-      jobs(id) ! WorkTransformed(transformedText)
+      jobs(id) ! WorkTransformed(uId, transformedText)
 
       goto(Executing) using Data(slaves, jobs - id)
 
